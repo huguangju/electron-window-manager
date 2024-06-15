@@ -20,7 +20,7 @@ export const readyURL = (url: string): string => {
     return appBase + url.substring(1);;
   }
 
-  return url.replace('{appBase}', appBase);
+  return url.replace('{appBase}', appBase as string);
 }
 
 /**

@@ -1,3 +1,4 @@
+import { BrowserWindow, BrowserWindowConstructorOptions } from 'electron';
 import { Window } from './window';
 
 /**
@@ -15,11 +16,12 @@ export interface WindowGlobalConfig {
   /**
    * A list of the layouts, a direct shortcut, instead of using layouts.add for each layout
    */
-  layouts: { [key: string]: any; } | boolean;
+  layouts: { [key: string]: string; } | boolean;
   /**
    * The default layout name
    */
   defaultLayout: string | boolean;
+  defaultSetup?: any;
   /**
    * The default setup template name
    */
@@ -36,4 +38,17 @@ export interface WindowGlobalConfig {
    * The window url global load-failure callback
    */
   onLoadFailure: (window: Window) => void;
+}
+
+// export interface WindowConfig {
+//   options: BrowserWindowConstructorOptions;
+// }
+
+// TODO
+export interface WindowConfig extends BrowserWindowConstructorOptions {
+  url?: string;
+  setupTemplate?: string | boolean;
+  showDevTools?: boolean;
+  layout?: string | boolean;
+  [key: string]: any;
 }

@@ -11,12 +11,19 @@
     "url": "https://github.com/TamkeenLMS/electron-window-manager.git"
   },
   "keywords": [
-    "electron", "atom shell", "window", "browser", "desktop"
+    "electron",
+    "atom shell",
+    "window",
+    "browser",
+    "desktop"
   ],
   "author": "Ahmed Zain <tamkeenlms@gmail.com>",
   "license": "MIT",
   "dependencies": {
     "electron-localshortcut": "^3.1.0",
     "melanke-watchjs": "^1.4.3"
+  },
+  "devDependencies": {
+    "@types/electron-localshortcut": "^3.1.3"
   }
 }

@@ -1,7 +1,9 @@
 import { BrowserWindow, BrowserWindowConstructorOptions, Menu } from 'electron';
 import { WindowManager } from './windowManager';
 import fs from 'fs';
-import { isObject, isString } from './utils';
+import { getAppLocalPath, isObject, isString, readyURL, resolvePosition } from './utils';
+import Shortcuts from 'electron-localshortcut'
+import { WindowConfig } from './types';
 
 /**
  * 创建新窗口实例
@@ -15,24 +17,16 @@ import { isObject, isString } from './utils';
 export class Window {
   private browserWindow: BrowserWindow | null = null;
 
-  private setup: BrowserWindowConstructorOptions | null = null;
+  private setup: WindowConfig = {};
 
-  public config: {
-    setupTemplate?: string;
-    url?: string;
-    showDevTools?: boolean;
-    [key: string]: any;
-  } = {};
-
-  private object: BrowserWindow | null;
+  public object: BrowserWindow | null = null;
 
   constructor(
     private name: string,
     title?: string,
     url?: string,
     setupTemplate?: string,
-    setup?: BrowserWindowConstructorOptions | string,
-    config?: Record<string, any>,
+    setup?: WindowConfig | string,
     showDevTools?: boolean
   ) {
     // Check if the window already exists
@@ -47,22 +41,14 @@ export class Window {
     // The window unique name, if omitted a serialized name will be used instead; window_1 ~> window_2 ~> ...
     this.name = name || `window_${Object.keys(WindowManager.shared.windows).length + 1}`;
 
-    // The BrowserWindow module instance
-    this.object = null;
-
     this.setup = {
-        show: false,
-        // setupTemplate: setupTemplate
+      show: false,
+      setupTemplate,
     };
-    this.config = {
-      setupTemplate
-    }
 
     if(title) this.setup.title = title;
-    // if(url) this.setup.url = url;
-    // if(showDevTools) this.setup.showDevTools = showDevTools;
-    if(url) this.config.url = url;
-    if(showDevTools) this.config.showDevTools = showDevTools;
+    if(url) this.setup.url = url;
+    if(showDevTools) this.setup.showDevTools = showDevTools;
 
     // If the setup is just the window dimensions, like '500x350'
     if(isString(setup) && (setup as string).indexOf('x') >= 0){
@@ -93,29 +79,47 @@ export class Window {
     }
   }
 
+  /**
+   * Sets the window preferred layout
+   * @param name The name of the layout, registered using layouts.add()
+  */
   useLayout(name: string) {
     this.setup.layout = name;
   }
 
+  /**
+  * Sets the setup template to use
+  */
   applySetupTemplate(name: string) {
     this.setup.setupTemplate = name;
   }
 
+  /**
+   * Sets the target URL for the window
+   * */
   setURL(url: string) {
     this.setup.url = url;
   }
 
+  /**
+   * Created window instance
+   * @param url [optional] The window target URL in case you didn't provide it in the constructor
+   * */
   create(url?: string) {
     if (url) {
       this.setup.url = url;
     }
 
-    const windowManager = (global as any).windowManager as WindowManager;
-    const config = windowManager.config;
-    let template = this.setup.setupTemplate || config.defaultSetupTemplate;
+    // Get a copy of the window manager config
+    const config = WindowManager.shared.config;
 
+    // If a setup setupTemplate is provided
+    let template = this.setup.setupTemplate || config.defaultSetupTemplate;
     if (template && this.setup.setupTemplate !== false) {
-      template = windowManager.templates.get(template);
+      // TODO Get the setupTemplate
+      template = WindowManager.shared.templates.get(template);
+
+      // Merge with this window setup
       if (template) {
         this.setup = { ...template, ...this.setup };
       } else {
@@ -123,42 +127,128 @@ export class Window {
       }
     }
 
-    // 处理其他设置...
+    // The title
+    if(!this.setup.title && config.defaultWindowTitle){
+        this.setup.title = config.defaultWindowTitle;
+    }
 
-    this.browserWindow = new BrowserWindow(this.setup);
-    console.log(`Window "${this.name}" was created`);
+    if(this.setup.title && config.windowsTitlePrefix && !config.defaultWindowTitle){
+        this.setup.title = config.windowsTitlePrefix + this.setup.title;
+    }
 
-    // 其他事件处理...
+    // Handle the "position" feature/property
+    if(this.setup.position){
+        // If an array was passed
+        if(Array.isArray(this.setup.position)){
+            this.setup.x = this.setup.position[0];
+            this.setup.y = this.setup.position[1];
+
+        }else{
+            // Resolve the position into x & y coordinates
+            const xy = resolvePosition(this.setup);
+            if(xy){
+                this.setup.y = xy[1];
+                this.setup.x = xy[0];
+            }
+        }
+    }
+
+     // The defaults
+    if(!this.setup.resizable) this.setup.resizable = false;
+    if(!this.setup.useContentSize) this.setup.useContentSize = true;
+    if(!this.setup.x && !this.setup.y) this.setup.center = true;
+
+    // Create the new browser window instance, with the passed setup
+    this.object = new BrowserWindow(this.setup);
+
+    // Log the action
+    console.log('Window "' + this.name + '" was created');
+
+      // On load failure
+    this.object.webContents.on('did-fail-load', () => {
+        this.down();
+    });
+
+    // Open the window target content/url
+    if(this.setup.url){
+        this.loadURL(this.setup.url);
+    }
+
+    // If the width/height not provided!
+    const bounds = this.object.getBounds();
+    if(!this.setup.width) this.setup.width = bounds.width;
+    if(!this.setup.height) this.setup.height = bounds.height;
+
+    // Open the window target content/url
+    if(this.setup.url){
+        this.loadURL(this.setup.url);
+    }
+
+    // Set the window menu (null is valid to not have a menu at all)
+    if(this.setup.menu !== undefined){
+        if(process.platform === 'darwin') {
+          Menu.setApplicationMenu(Menu.buildFromTemplate(this.setup.menu));
+        } else {
+          this.object.setMenu(this.setup.menu);
+        }
+    }
+
+    // Show the dev tools ?
+    if(this.setup.showDevTools === true){
+        // TODO Show the dev tools
+        this.object.toggleDevTools();
+    }
+
+    // On close
+    this.object.on('closed', () => {
+        console.log('Window "' + this.name + '" was closed');
+
+        // Delete the reference on the windowManager object
+        delete WindowManager.shared.windows[this.name];
+
+        // Delete the window object
+        this.object = null;
+    });
+
+    return this;
   }
 
+  /**
+   * Open the created window instance
+   * @param url [optional] The window target URL in case you didn't provide it in the constructor
+   * @param hide [optional] Whether to show or hide the newely-created window, false by default
+   * */
   open(url?: string, hide?: boolean) {
-    if (this.browserWindow) {
+    // If the window is already created
+    if (this.object) {
       this.focus();
       return false;
     }
 
+    // Create the window
     this.create(url);
 
+    // Show the window
     if (!hide) {
-      this.browserWindow.show();
+      this.object!.show();
     }
   }
 
+  /**
+   * Makes the focus on this window
+   * */
   focus() {
-    if (this.browserWindow) {
-      this.browserWindow.focus();
-    }
+    this.object!.focus();
     return this;
   }
 
   loadURL(url?: string, options?: any) {
-    const windowManager = (global as any).windowManager as WindowManager;
-    const utils = windowManager.utils;
-    url = utils.readyURL(url || this.setup.url);
+    url = readyURL(url || this.setup.url || '');
 
-    const layout = this.setup.layout !== false ? this.setup.layout || windowManager.config.defaultLayout : false;
-    let layoutFile = layout ? windowManager.layouts.get(layout) : undefined;
+    const layout = this.setup.layout !== false ? this.setup.layout || WindowManager.shared.config.defaultLayout : false;
 
+    // TODO If a layout is specified
+    let layoutFile = layouts.get(layout);
     if (layout && !layoutFile) {
       console.log(`The layout "${layout}" wasn't found!`);
     }
@@ -167,6 +257,7 @@ export class Window {
       url = url.replace('file://', '');
       layoutFile = layoutFile.replace('file://', '');
 
+      // Load the the layout first
       fs.readFile(layoutFile, 'utf-8', (error, layoutCode) => {
         if (error) {
           console.log(`Couldn't load the layout file: ${layoutFile}`);
@@ -180,164 +271,214 @@ export class Window {
             this.down();
             return false;
           }
+          
+          // Get the final body
+          const finalContent = layoutCode
+            .replace(/\{\{appBase\}\}/g, getAppLocalPath())
+            .replace('{{content}}', content);
 
-          const finalContent = layoutCode.replace(/\{\{appBase\}\}/g, utils.getAppLocalPath()).replace('{{content}}', content);
+          // Load the final output
           this.html(finalContent, options);
         });
       });
     } else {
-      if (this.browserWindow) {
-        this.browserWindow.loadURL(url, options);
-      }
+      // Load the passed url
+      this.content().loadURL(url, options);
     }
   }
 
+  /**
+   * Sets the content of the window to whatever HTML code your provide
+   * @param code The HTML code
+   * @param options
+   * */
   html(code: string, options?: any) {
-    if (this.browserWindow) {
-      this.browserWindow.loadURL(`data:text/html;charset=utf-8,${code}`, options);
-    }
+    this.content().loadURL('data:text/html;charset=utf-8,' + code, options);
   }
 
+  /**
+ * Triggers the load-failure callback. This method is called whenever the targeted content isn't available or
+ * accessible. It will display a custom message by default, unless you define a custom callback for the window
+ * */
   down() {
+    // Force ignore the layout!
     this.setup.layout = false;
-    const windowManager = (global as any).windowManager as WindowManager;
-    const callback = this.setup.onLoadFailure || windowManager.config.onLoadFailure;
-    callback(this);
+
+    // Either a custom failure call back, or call the global one
+    const callback = this.setup.onLoadFailure || WindowManager.shared.config.onLoadFailure;
+
+    // Trigger the call back
+    callback.call(null, this);
   }
 
+  /**
+ * Returns the "webContents" object of the window
+ * */
   content() {
-    return this.browserWindow?.webContents || null;
+    return this.object!.webContents;
   }
 
+  /**
+ * Reload the window content
+ * @param ignoreCache By default the page cache will be used, pass TRUE to ignore this cache when reloading
+ * */
   reload(ignoreCache?: boolean) {
-    if (this.browserWindow) {
-      if (ignoreCache) {
-        this.browserWindow.webContents.reloadIgnoringCache();
-      } else {
-        this.browserWindow.webContents.reload();
-      }
+    if(ignoreCache === true){
+        // Reload ignoring the cache!
+        this.content().reloadIgnoringCache();
+    } else{
+        // Reload the content, with the cache available
+        this.content().reload();
     }
   }
 
+  /**
+ * Returns the url of the current page inside the window
+ * */
   currentURL() {
-    return this.browserWindow?.webContents.getURL() || '';
+    return this.content().getURL();
   }
 
+  /**
+ * A callback to fire when the page is ready
+ * @param withTheDomReady Pass true to execute the callback when the DOM is ready, and not just the page have loaded
+ * @param callback The callback to trigger when the page is ready. This callback is passed two to parameters;
+ * the first is the window instance object, and the second is the window content object
+ * */
   onReady(withTheDomReady: boolean, callback: (window: Window, content: Electron.WebContents) => void) {
-    const event = withTheDomReady ? 'dom-ready' : 'did-finish-load';
-    if (this.browserWindow) {
-      this.browserWindow.webContents.on(event, () => {
-        callback(this, this.browserWindow!.webContents);
-      });
-    }
+    const event = withTheDomReady === true ? 'dom-ready' :'did-finish-load';
+
+    // Fire the callback and pass the window .webContents to it
+    this.content().on(event, () => {
+        callback.call(null, this, this.content());
+    });
   }
 
+  /**
+ * Executes JS code on the created window
+ * @param code The JS code
+ * */
   execute(code: string) {
-    if (this.browserWindow) {
-      this.browserWindow.webContents.executeJavaScript(code);
-    }
+    this.content().executeJavaScript(code);
   }
 
+  /**
+ * Go back to the previous page/url to the current
+ * */
   goBack() {
-    if (this.browserWindow && this.browserWindow.webContents.canGoBack()) {
-      this.browserWindow.webContents.goBack();
+    if(this.content().canGoBack()){
+        this.content().goBack();
     }
   }
 
+  /**
+ * Closes the window
+ * */
   close() {
-    if (this.browserWindow) {
-      this.browserWindow.close();
-    }
+      this.object!.close();
   }
 
+  /**
+ * Destroys the BrowserWindow and this instance
+ * */
   destroy() {
-    if (this.browserWindow) {
-      this.browserWindow.destroy();
-      console.log(`Window "${this.name}" was destroyed`);
-      this.browserWindow = null;
-    }
+    this.object!.destroy();
+    console.log('Window "' + this.name + '" was destroyed');
   }
 
+  /**
+ * Minimizes the window
+ * */
   minimize() {
-    if (this.browserWindow) {
-      this.browserWindow.minimize();
-    }
+    this.object!.minimize();
+
     return this;
   }
 
+  /**
+ * Maximizes/Unmaximizes the window
+ * */
   maximize() {
-    if (this.browserWindow) {
-      if (this.browserWindow.isMaximized()) {
-        this.browserWindow.restore();
-      } else {
-        this.browserWindow.maximize();
-      }
-    }
+    if (!this.object) return this;
+    if(this.object.isMaximized()) this.object.restore();
+    else this.object.maximize();
+
     return this;
   }
 
+  /**
+ * Restore the window into focus
+ * */
   restore() {
-    if (this.browserWindow) {
-      this.browserWindow.restore();
-    }
+    this.object!.restore();
+
     return this;
   }
 
-  toFullScreen() {
-    if (this.browserWindow) {
-      this.browserWindow.setFullScreen(true);
-    }
-    return this;
-  }
-
+  /**
+ * Toggles developer tools
+ * @param detached [optional] Whether to open the dev tools in a separate window or not
+ * */
   toggleDevTools(detached?: boolean) {
-    if (this.browserWindow) {
-      this.browserWindow.toggleDevTools({ detached: detached || false });
-    }
+    this.object!.toggleDevTools({detached: detached || false});
     return this;
   }
 
+  /**
+ * Attaching shortcut to the window
+ * */
   registerShortcut(accelerator: string, callback: (window: Window) => void) {
-    if (this.browserWindow) {
-      const windowManager = (global as any).windowManager as WindowManager;
-      windowManager.shortcuts.register(this.browserWindow, accelerator, () => {
-        callback(this);
-      });
-    }
+    Shortcuts.register(this.object!, accelerator, () => {
+        callback.call(null, this);
+    });
+
     return this;
   }
 
+  /**
+ * Moves the window to a specific x y position, or you can simple use a pre-defined position, like "right", "left"
+ * "topLeft", "bottomRight", ...
+ * */
   move(x: number | string, y?: number) {
-    if (this.browserWindow) {
-      const bounds = this.browserWindow.getBounds();
-      if (typeof x === 'string') {
+    // Get the window bounds first
+    const bounds = this.object!.getBounds();
+
+    // If a position name was provided
+    if(isString(x)){
         this.setup.position = x;
-        const xy = (global as any).windowManager.utils.resolvePosition(this.setup);
-        if (xy) {
-          x = xy[0];
-          y = xy[1];
+        const xy = resolvePosition(this.setup);
+
+        if(xy){
+            x = xy[0];
+            y = xy[1]
         }
-      }
-      this.browserWindow.setBounds({
-        x: typeof x === 'number' ? x : bounds.x,
-        y: typeof y === 'number' ? y : bounds.y,
-        width: this.setup.width,
-        height: this.setup.height,
-      });
     }
+
+    // Set the bounds
+    this.object!.setBounds({
+        x: x || bounds.x,
+        y: y || bounds.y,
+        width: this.setup.width,
+        height: this.setup.height
+    });
+
     return this;
   }
 
+  /**
+ * Resize the window, by entering either the width or the height, or both
+ * */
   resize(width?: number, height?: number) {
-    if (this.browserWindow) {
-      const bounds = this.browserWindow.getBounds();
-      this.browserWindow.setBounds({
-        width: width || bounds.width,
-        height: height || bounds.height,
-        x: bounds.x,
-        y: bounds.y,
-      });
-    }
+    // Get the current bounds
+    const bounds = this.object!.getBounds();
+
+    this.object!.setBounds({
+      'width': width || bounds.width,
+      'height': height || bounds.height,
+      'x': bounds.x,
+      'y': bounds.y
+    });
+
     return this;
   }
 
